@@ -45,6 +45,7 @@
 #include "tests/sb_memory.h"
 #include "tests/sb_threads.h"
 #include "tests/sb_mutex.h"
+#include "tests/sb_oltp.h"
 
 /* Macros to control global execution mutex */
 #define SB_THREAD_MUTEX_LOCK() pthread_mutex_lock(&sb_globals.exec_mutex) 
@@ -52,21 +53,13 @@
 
 #define SB_MAX_RND 0x3fffffffu
 
-/* Maximum number of elements in --report-checkpoints list */
-#define MAX_CHECKPOINTS 256
-
 /* random() is not thread-safe on most platforms, use lrand48() if available */
 #ifdef HAVE_LRAND48
-# define sb_rnd() (lrand48() % SB_MAX_RND)
-# define sb_srnd(seed) srand48(seed)
+#define sb_rnd() (lrand48() % SB_MAX_RND)
+#define sb_srnd(seed) srand48(seed)
 #else
-# define sb_rnd() (random() % SB_MAX_RND)
-# define sb_srnd(seed) srandom((unsigned int)seed)
-#endif
-#ifdef HAVE_DRAND48
-# define sb_rnd_double() drand48()
-#else
-# define sb_rnd_double() (((double) sb_rnd()) / SB_MAX_RND)
+#define sb_rnd() (random() % SB_MAX_RND)
+#define sb_srnd(seed) srandom((unsigned int)seed)
 #endif
 
 /* Sysbench commands */
@@ -90,8 +83,7 @@ typedef enum
   SB_REQ_TYPE_FILE,
   SB_REQ_TYPE_SQL,
   SB_REQ_TYPE_THREADS,
-  SB_REQ_TYPE_MUTEX,
-  SB_REQ_TYPE_SCRIPT
+  SB_REQ_TYPE_MUTEX
 } sb_request_type_t;
 
 /* Request structure definition */
@@ -102,7 +94,7 @@ typedef struct
 {
   int              type;
   struct sb_test_t *test;
-
+  
   /* type-specific data */
   union
   {
@@ -110,14 +102,9 @@ typedef struct
     sb_mem_request_t     mem_request;
     sb_threads_request_t threads_request;
     sb_mutex_request_t   mutex_request;
+    sb_sql_request_t     sql_request;
   } u;
 } sb_request_t;
-
-typedef enum
-{
-  SB_STAT_INTERMEDIATE,
-  SB_STAT_CUMULATIVE
-} sb_stat_t;
 
 /* Test commands definition */
 
@@ -133,9 +120,9 @@ typedef int sb_op_init(void);
 typedef int sb_op_prepare(void);
 typedef int sb_op_thread_init(int);
 typedef void sb_op_print_mode(void);
-typedef sb_request_t sb_op_get_request(void);
+typedef sb_request_t sb_op_get_request(int);
 typedef int sb_op_execute_request(sb_request_t *, int);
-typedef void sb_op_print_stats(sb_stat_t);
+typedef void sb_op_print_stats(void);
 typedef int sb_op_thread_done(int);
 typedef int sb_op_cleanup(void);
 typedef int sb_op_done(void);
@@ -173,8 +160,8 @@ typedef struct
 
 typedef struct sb_test
 {
-  const char       *sname;
-  const char       *lname;
+  char             *sname;
+  char             *lname;
   sb_operations_t  ops;
   sb_commands_t    cmds;
   sb_arg_t         *args;
@@ -196,45 +183,28 @@ typedef struct
 
 typedef struct
 {
-  sb_cmd_t        command;      /* command passed from command line */
-  int             error;        /* global error - everyone exit */
-  pthread_mutex_t exec_mutex;   /* execution mutex */
-  sb_timer_t      exec_timer;   /* total execution timer */
-  /* timers for cumulative reports */
-  sb_timer_t      cumulative_timer1;
-  sb_timer_t      cumulative_timer2;
-  unsigned int    num_threads;  /* number of threads to use */
-  unsigned int    num_running;  /* number of threads currently active */
-  unsigned int    report_interval; /* intermediate reports interval */
-  unsigned int    percentile_rank; /* percentile rank for response time stats */
-  /* array of report checkpoints */
-  unsigned int    checkpoints[MAX_CHECKPOINTS];
-  unsigned int    n_checkpoints; /* number of checkpoints */
-  unsigned int    tx_rate;      /* target transaction rate */
-  unsigned int    max_requests; /* maximum number of requests */
-  unsigned int    max_time;     /* total execution time limit */
-  unsigned char   debug;        /* debug flag */
-  int             force_shutdown; /* whether we must force test shutdown */
-  unsigned int    timeout;      /* forced shutdown timeout */
-  unsigned char   validate;     /* validation flag */
-  unsigned char   verbosity;    /* log verbosity */
-  int             event_queue_length; /* length of request queue when tx-rate is
-                                         used */
-  int             concurrency;  /* number of concurrent requests when tx-rate is
-                                used */
-  /* 1 when forced shutdown is in progress, 0 otherwise */
-  int             forced_shutdown_in_progress;
+  sb_cmd_t         command;        /* command passed from command line */
+  int              error;          /* global error - everyone exit */
+  pthread_mutex_t  exec_mutex;     /* execution mutex */
+  sb_timer_t       *op_timers;     /* timers to measure each thread's run time */
+  sb_timer_t       exec_timer;     /* total execution timer */
+  unsigned int     num_threads;    /* number of threads to use */
+  unsigned int     max_requests;   /* maximum number of requests */
+  unsigned int     max_time;       /* total execution time limit */
+  int              force_shutdown; /* whether we must force test shutdown */
+  unsigned int     timeout;        /* forced shutdown timeout */
+  unsigned char    debug;          /* debug flag */
+  unsigned char    validate;       /* validation flag */
 } sb_globals_t;
 
 extern sb_globals_t sb_globals;
 
-/* Random number generators */
-int sb_rand(int, int);
-int sb_rand_uniform(int, int);
-int sb_rand_gaussian(int, int);
-int sb_rand_special(int, int);
-int sb_rand_pareto(int, int);
-int sb_rand_uniq(int a, int b);
-void sb_rand_str(const char *, char *);
+/* used to get options passed from command line */
+
+int sb_get_value_flag(char *);
+int sb_get_value_int(char *);
+unsigned long long sb_get_value_size(char *);
+float sb_get_value_float(char *);
+char *sb_get_value_string(char *);
 
 #endif

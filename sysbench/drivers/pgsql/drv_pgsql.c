@@ -84,14 +84,15 @@ db_pgsql_bind_map_t db_pgsql_bind_map[] =
 
 static drv_caps_t pgsql_drv_caps =
 {
-  1,    /* multi_rows_insert */
-  1,    /* prepared_statements */
-  0,    /* auto_increment */
-  0,    /* needs_commit */
-  1,    /* serial */
-  0,    /* unsigned int */
+  0,
+  1,
+  1,
+  0,
+  0,
+  1,
+  0,
   
-  NULL  /* table_options_str */
+  NULL
 };
 
 /* Describes the PostgreSQL prepared statement */
@@ -111,7 +112,7 @@ static char use_ps; /* whether server-side prepared statemens should be used */
 /* PgSQL driver operations */
 
 static int pgsql_drv_init(void);
-static int pgsql_drv_describe(drv_caps_t *);
+static int pgsql_drv_describe(drv_caps_t *, const char *);
 static int pgsql_drv_connect(db_conn_t *);
 static int pgsql_drv_disconnect(db_conn_t *);
 static int pgsql_drv_prepare(db_stmt_t *, const char *);
@@ -131,10 +132,9 @@ static int pgsql_drv_done(void);
 
 static db_driver_t pgsql_driver =
 {
-  .sname = "pgsql",
-  .lname = "PostgreSQL driver",
-  .args = pgsql_drv_args,
-  .ops =
+  "pgsql",
+  "PostgreSQL driver",
+  pgsql_drv_args,
   {
     pgsql_drv_init,
     pgsql_drv_describe,
@@ -153,7 +153,7 @@ static db_driver_t pgsql_driver =
     pgsql_drv_store_results,
     pgsql_drv_done
   },
-  .listitem = {NULL, NULL}
+  {NULL, NULL}
 };
 
 
@@ -196,33 +196,11 @@ int pgsql_drv_init(void)
 /* Describe database capabilities */
 
 
-int pgsql_drv_describe(drv_caps_t *caps)
+int pgsql_drv_describe(drv_caps_t *caps, const char * table_name)
 {
-  PGconn *con;
+  (void)table_name; /* unused */
   
   *caps = pgsql_drv_caps;
-
-  /* Determine the server version */
-  con = PQsetdbLogin(args.host,
-                     args.port,
-                     NULL,
-                     NULL,
-                     args.db,
-                     args.user,
-                     args.password);
-  if (PQstatus(con) != CONNECTION_OK)
-  {
-    log_text(LOG_FATAL, "Connection to database failed: %s",
-             PQerrorMessage(con));
-    PQfinish(con);
-    return 1;
-  }
-
-  /* Support for multi-row INSERTs is not available before 8.2 */
-  if (PQserverVersion(con) < 80200)
-    caps->multi_rows_insert = 0;
-
-  PQfinish(con);
   
   return 0;
 }
@@ -410,7 +388,7 @@ int pgsql_drv_bind_param(db_stmt_t *stmt, db_bind_t *params, unsigned int len)
     return 1;
   }
 
-  pgstmt->ptypes = (Oid *)malloc(len * sizeof(int));
+  pgstmt->ptypes = (int *)malloc(len * sizeof(int));
   if (pgstmt->ptypes == NULL)
     return 1;
 
@@ -714,5 +692,6 @@ int get_pgsql_bind_type(db_bind_type_t type)
 
 int get_unique_stmt_name(char *name, int len)
 {
-  return snprintf(name, len, "sbstmt%d%d", (int)sb_rnd(), (int)sb_rnd());
+  return snprintf(name, len, "sbstmt%d%d", sb_rnd(), sb_rnd());
 }
+

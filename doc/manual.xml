@@ -16,50 +16,11 @@
     </authorgroup>
     
     <copyright>
-      <year>2004-2006</year>
+      <year>2004-2009</year>
       <holder>MySQL AB</holder>
     </copyright></bookinfo>
   
   <toc></toc>
-
-  <chapter id="about">
-    <title>About this document</title>
-
-    <para>
-      This document is a user manual for SysBench, a multi-threaded
-      benchmark tool available from <ulink
-      url="http://launchpad.net/sysbench">http://launchpad.net/sysbench</ulink>.
-      This document describes features provided by the 0.4.x development
-      branch of SysBench. New features available in the newer 0.5.x
-      branch are not covered by this document.
-    </para>
-
-    <section id="translations">
-      <title> Translations </title>
-      <para>
-	The following translations of this document are currently
-	available:
-
-      <variablelist>
-	<varlistentry>
-	  <term>Serbo-Croatian</term>
-	  <listitem><para>
-	      <ulink url="http://science.webhostinggeeks.com/sysbench-manual">http://science.webhostinggeeks.com/sysbench-manual/</ulink>.
-	    </para></listitem>
-	</varlistentry>
-      </variablelist>
-      </para>
-    </section>
-
-    <section id="acknowledgments">
-      <title> Acknowledgments </title>
-      <para>
-	Thanks to Vera Djuraskovic
-	<email>veradjuraskovic@webhostinggeeks.com</email> for
-	contributing a Serbo-Croatian translation of this document.
-      </para>
-    </section>
-  </chapter>
 
   <chapter id="introduction">
     <title>Introduction</title>
@@ -162,10 +123,6 @@
       <title>Installation</title>
 
       <para>
-        If you are building SysBench from a Bazaar repository rather than from a release tarball,
-        you should run <command>./autogen.sh</command> before building.
-      </para>
-      <para>
 	The following standart procedure will be sufficient to build SysBench in most cases:
 	<synopsis>
 	  <command>./configure</command>
@@ -236,7 +193,7 @@
     </section>
 
     <section id="common_options">
-      <title>General command line options</title>
+      <title>Common command line options</title>
       <para>
 	The table below lists the supported common options, their descriptions and default values:
       </para>
@@ -247,9 +204,17 @@
 	    <row><entry><option>--num-threads</option></entry><entry>The total number of worker threads to create</entry><entry>1</entry></row>
 	    <row><entry><option>--max-requests</option></entry><entry>Limit for total number of requests. 0 means unlimited</entry><entry>10000</entry></row>
 	    <row><entry><option>--max-time</option></entry><entry>Limit for total execution time in seconds. 0 (default) means unlimited</entry><entry>0</entry></row>
+	    <row><entry><option>--forced-shutdown</option></entry><entry>
+               <para>
+               Amount of time to wait after --max-time before forcing shutdown. The value can be either an absolute number of seconds or
+               as a percentage of the <option>--max-time</option> value by specifying a number of percents followed by the '%' sign.
+               </para>
+               <para>
+               "<option>off</option>" (the default value) means that no forced shutdown will be performed.
+               </para>
+             </entry><entry>off</entry></row>
 	    <row><entry><option>--thread-stack-size</option></entry><entry>Size of stack for each thread</entry><entry>32K</entry></row>
-	    <row><entry><option>--init-rng</option></entry><entry>Specifies if random numbers generator should be initialized from timer before the test start</entry><entry>off</entry></row>
-	    <row><entry><option>--report-interval</option></entry><entry>Periodically report intermediate statistics with a specified interval in seconds. Note that statistics produced by this option is per-interval rather than cumulative. 0 disables intermediate reports</entry><entry>0</entry></row>
+	    <row><entry><option>--init-rnd</option></entry><entry>Specifies if random numbers generator should be initialized from timer before the test start</entry><entry>off</entry></row>
 	    <row><entry><option>--test</option></entry><entry>Name of the test mode to run</entry><entry><emphasis>Required</emphasis></entry></row>
 	    <row><entry><option>--debug</option></entry><entry>Print more debug info</entry><entry>off</entry></row>
 	    <row><entry><option>--validate</option></entry><entry>Perform
@@ -272,6 +237,8 @@
 		</para>
 	      </entry>
 	      <entry>95</entry></row>
+	    <row><entry><option>--batch</option></entry><entry>Dump current results periodically (see <xref linkend="batch_mode"/>)</entry><entry>off</entry></row>
+	    <row><entry><option>--batch-delay</option></entry><entry>Delay between batch dumps in secods (see <xref linkend="batch_mode"/>)</entry><entry>300</entry></row>
 	    <row><entry><option>--validate</option></entry><entry>Perform validation of test results where possible</entry><entry>off</entry></row>
 	  </tbody>
 	</tgroup>
@@ -282,6 +249,21 @@
 	specified by appending the corresponding multiplicative suffix (K for
 	kilobytes, M for megabytes, G for gigabytes and T for terabytes).
       </para>
+    </section>
+    <section id="batch_mode">
+      <title>Batch mode</title>
+      In some cases it is useful to have not only the final benchmarks
+      statistics, but also periodical dumps of current stats to see how they
+      change over the test run. For this purpose SysBench has a batch
+      execution mode which is turned on by the <option>--batch</option>
+      option. You may specify the delay in seconds between the consequent dumps with
+      the <option>--batch-delay</option> option. Example:
+      <screen>
+	sysbench --batch --batch-delay=5 --test=threads run
+      </screen>
+      This will run SysBench in a threads test mode, with the current values
+      of minimum, average, maximum and percentile for request execution
+      times printed every 5 seconds.
     </section>
 
 
@@ -504,7 +486,8 @@
 		    <option>seqrd</option>, <option>rndrd</option>, <option>rndwr</option>, <option>rndwr</option> (see above)
 		  </entry><entry><emphasis>required</emphasis></entry></row>
 		<row><entry><option>--file-io-mode</option></entry><entry>
-		    I/O mode. Possible values: <option>sync</option>, <option>async</option>, <option>map</option>, 
+		    I/O mode. Possible values: <option>sync</option>, <option>async</option>, <option>fastmmap</option>, 
+		    <option>slowmmap</option> (only if supported by the platform, see above).
 		  </entry><entry>sync</entry></row>
 		<row><entry><option>--file-async-backlog</option></entry><entry>
 		    Number of asynchronous operations to queue per thread (only for <option>--file-io-mode=async</option>, see above)
@@ -660,9 +643,31 @@
 	      <row><entry><option>--oltp-read-only</option></entry><entry>
 		  Read-only mode. No <option>UPDATE</option>, <option>DELETE</option> or <option>INSERT</option> queries will be performed.
 		</entry><entry>off</entry></row>
-	      <row><entry><option>--oltp-reconnect</option></entry><entry>
-		  Re-connect to serveron each transaction.
+	      <row><entry><option>--oltp-skip-trx</option></entry><entry>
+                  Omit <option>BEGIN</option>/<option>COMMIT</option> statements, i.e. run the same queries as the test would normally run but without using transactions.
 		</entry><entry>off</entry></row>
+	      <row><entry><option>--oltp-reconnect-mode</option></entry><entry>
+                  Reconnect mode. Possible values:
+                  <informaltable frame="sides">
+                  <tgroup cols='2'>
+                  <tbody>
+                    <row><entry><option>session</option></entry>
+                         <entry>Don't reconnect (i.e. each thread disconnects only at the end of the test)</entry>
+                    </row>
+                    <row><entry><option>query</option></entry>
+                         <entry>Reconnect after each SQL query</entry>
+                    </row>
+                    <row><entry><option>transaction</option></entry>
+                         <entry>Reconnect after each transaction (if transactions are used in the selected DB test)</entry>
+                    </row>
+                    <row><entry><option>random</option></entry>
+                         <entry>One of the above modes is randomly chosen for each transaction</entry>
+                    </row>
+                  </tbody>
+                   </tgroup> 
+                  </informaltable>
+		</entry><entry><option>session</option></entry>
+              </row>
 	      <row><entry><option>--oltp-range-size</option></entry><entry>Range size for range queries</entry><entry>100</entry></row>
 	      <row><entry><option>--oltp-point-selects</option></entry><entry>
 		  Number of point select queries in a single transaction
@@ -760,13 +765,19 @@
 		  MySQL database name. Note SysBench will not automatically create this database. You should create it manually and grant
 		  the appropriate privileges to a user which will be used to access the test table.
 		</entry><entry>sbtest</entry></row>
-	      <row><entry><option>--mysql-table-type</option></entry><entry>
+	      <row><entry><option>--mysql-table-engine</option></entry><entry>
 		  Type of the test table. Possible values: <option>myisam</option>, <option>innodb</option>, <option>heap</option>,
-		  <option>ndbcluster</option>, <option>bdb</option>. 
-		</entry><entry>innodb</entry></row>
+		  <option>ndbcluster</option>, <option>bdb</option>, <option>maria</option>, <option>falcon</option>, <option>pbxt</option>
+		</entry><entry>innodb</entry>, </row>
+              <row><entry><option>--mysql-ssl</option></entry><entry>
+                  Use SSL connections.
+		</entry><entry>no</entry>, </row>
 	      <row><entry><option>--myisam-max-rows</option></entry><entry>
 		  MAX_ROWS option for MyISAM tables (required for big tables)  
 		</entry><entry>1000000</entry></row>
+	      <row><entry><option>--mysql-create-options</option></entry><entry>
+                  Additional options passed to CREATE TABLE.
+		</entry><entry></entry></row>
 	    </tbody>
 	  </tgroup>
 	</informaltable>
@@ -775,8 +786,8 @@
       <para>
 	Example usage:
 	<screen>
-	  $ sysbench --test=oltp --mysql-table-engine=myisam --oltp-table-size=1000000 --mysql-socket=/tmp/mysql.sock prepare
-	  $ sysbench --num-threads=16 --max-requests=100000 --test=oltp --oltp-table-size=1000000 --mysql-socket=/tmp/mysql.sock --oltp-read-only=on run
+	  $ sysbench --test=oltp --mysql-table-type=myisam --oltp-table-size=1000000 --mysql-socket=/tmp/mysql.sock prepare
+	  $ sysbench --num-threads=16 --max-requests=100000 --test=oltp --oltp-table-size=1000000 --mysql-socket=/tmp/mysql.sock --oltp-read-only run
 	</screen>
 	The first command will create a MyISAM table 'sbtest' in a database 'sbtest' on a MySQL server using <option>/tmp/mysql.sock</option> socket, then fill this table with 1M records. The second command will run the actual benchmark with 16 client threads, limiting the total number of request by 100,000.
       </para>

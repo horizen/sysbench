@@ -25,6 +25,8 @@
 
 #ifdef STDC_HEADERS
 # include <stdio.h>
+/* Required for memalign to be declared on Solaris */
+#define __EXTENSIONS__
 # include <stdlib.h>
 #endif
 
@@ -58,7 +60,6 @@
 
 #include "sysbench.h"
 #include "crc32.h"
-#include "sb_percentile.h"
 
 /* Lengths of the checksum and the offset fields in a block */
 #define FILE_CHECKSUM_LENGTH sizeof(int)
@@ -67,7 +68,6 @@
 #ifdef _WIN32
 typedef HANDLE FILE_DESCRIPTOR;
 #define VALID_FILE(fd) (fd != INVALID_HANDLE_VALUE)
-#define SB_INVALID_FILE INVALID_HANDLE_VALUE
 #define FD_FMT "%p"
 #define MAP_SHARED 0
 #define PROT_READ  1
@@ -80,7 +80,6 @@ int munmap(void *addr, size_t size);
 #else
 typedef int FILE_DESCRIPTOR;
 #define VALID_FILE(fd) (fd >= 0)
-#define SB_INVALID_FILE (-1)
 #define FD_FMT "%d"
 #endif
 
@@ -111,13 +110,6 @@ typedef enum
   FILE_IO_MODE_MMAP
 } file_io_mode_t;
 
-typedef enum {
-  SB_FILE_FLAG_NORMAL,
-  SB_FILE_FLAG_SYNC,
-  SB_FILE_FLAG_DSYNC,
-  SB_FILE_FLAG_DIRECTIO
-} file_flags_t;
-
 #ifdef HAVE_LIBAIO
 /* Per-thread async I/O context */
 typedef struct
@@ -143,7 +135,7 @@ static unsigned int      num_files;
 static long long         total_size;
 static long long         file_size;
 static int               file_block_size;
-static file_flags_t      file_extra_flags;
+static int               file_extra_flags;
 static int               file_fsync_freq;
 static int               file_fsync_all;
 static int               file_fsync_end;
@@ -161,23 +153,21 @@ static long long       position;      /* current position in file */
 static unsigned int    current_file;  /* current file */
 static unsigned int    fsynced_file;  /* file number to be fsynced (periodic) */
 static unsigned int    fsynced_file2; /* fsyncing in the end */
+static pthread_mutex_t fsync_mutex;   /* used to sync access to counters */
 
 static int is_dirty;               /* any writes after last fsync series ? */
 static int read_ops;
+static int real_read_ops;
 static int write_ops;
+static int real_write_ops;
 static int other_ops;
-static int last_other_ops;
 static unsigned int req_performed; /* number of requests done */
 static unsigned long long bytes_read;
-static unsigned long long last_bytes_read;
-static unsigned long long bytes_written;
-static unsigned long long last_bytes_written;
-
-static const double megabyte = 1024.0 * 1024.0;
+static unsigned long long  bytes_written;
 
 #ifdef HAVE_MMAP
 /* Array of file mappings */
-static void          **mmaps;
+static void          **mmaps; 
 static unsigned long file_page_mask;
 #endif
 
@@ -193,16 +183,13 @@ static file_test_mode_t test_mode;
 /* Previous request needed for validation */
 static sb_file_request_t prev_req;
 
-/* Percentile stats for --report-interval */
-static sb_percentile_t local_percentile;
-
 static sb_arg_t fileio_args[] = {
   {"file-num", "number of files to create", SB_ARG_TYPE_INT, "128"},
   {"file-block-size", "block size to use in all IO operations", SB_ARG_TYPE_INT, "16384"},
   {"file-total-size", "total size of files to create", SB_ARG_TYPE_SIZE, "2G"},
   {"file-test-mode", "test mode {seqwr, seqrewr, seqrd, rndrd, rndwr, rndrw}",
    SB_ARG_TYPE_STRING, NULL},
-  {"file-io-mode", "file operations mode {sync,async,mmap}", SB_ARG_TYPE_STRING, "sync"},
+  {"file-io-mode", "file operations mode {sync,async,fastmmap,slowmmap}", SB_ARG_TYPE_STRING, "sync"},
 #ifdef HAVE_LIBAIO
   {"file-async-backlog", "number of asynchronous operatons to queue per thread", SB_ARG_TYPE_INT, "128"},
 #endif
@@ -229,18 +216,18 @@ static int file_cmd_cleanup(void);
 static int file_init(void);
 static void file_print_mode(void);
 static int file_prepare(void);
-static sb_request_t file_get_request(void);
+static sb_request_t file_get_request(int);
 static int file_execute_request(sb_request_t *, int);
 #ifdef HAVE_LIBAIO
 static int file_thread_done(int);
 #endif
 static int file_done(void);
-static void file_print_stats(sb_stat_t);
+static void file_print_stats(void);
 
 static sb_test_t fileio_test =
 {
   "fileio",
-  "File I/O test",  
+  "File I/O test",
   {
     file_init,
     file_prepare,
@@ -250,21 +237,21 @@ static sb_test_t fileio_test =
     file_execute_request,
     file_print_stats,
 #ifdef HAVE_LIBAIO
-     file_thread_done,
+    file_thread_done,
 #else
-     NULL,
+    NULL,
 #endif
     NULL,
     file_done
   },
   {
-   NULL,
-   file_cmd_prepare,
-   NULL,
-   file_cmd_cleanup
+    NULL,
+    file_cmd_prepare,
+    NULL,
+    file_cmd_cleanup
   },
   fileio_args,
-  {0,0}
+  {NULL, NULL}
 };
 
 
@@ -272,14 +259,13 @@ static int create_files(void);
 static int remove_files(void);
 static int parse_arguments(void);
 static void clear_stats(void);
-static void init_vars(void);
 static sb_request_t file_get_seq_request(void);
 static sb_request_t file_get_rnd_request(void);
 static void check_seq_req(sb_file_request_t *, sb_file_request_t *);
 static const char *get_io_mode_str(file_io_mode_t mode);
 static const char *get_test_mode_str(file_test_mode_t mode);
-static void file_fill_buffer(unsigned char *, unsigned int, size_t);
-static int file_validate_buffer(unsigned char  *, unsigned int, size_t);
+static void file_fill_buffer(char *, unsigned int, size_t);
+static int file_validate_buffer(char  *, unsigned int, size_t);
 
 /* File operation wrappers */
 static int file_fsync(unsigned int, int);
@@ -301,7 +287,6 @@ static unsigned long sb_getpagesize(void);
 static unsigned long sb_get_allocation_granularity(void);
 static void *sb_memalign(size_t size);
 static void sb_free_memaligned(void *buf);
-static FILE_DESCRIPTOR sb_open(const char *name);
 
 int register_test_fileio(sb_list_t *tests)
 {
@@ -328,11 +313,7 @@ int file_init(void)
     return 1;
 #endif
 
-  init_vars();
   clear_stats();
-
-  if (sb_percentile_init(&local_percentile, 100000, 1.0, 1e13))
-    return 1;
 
   return 0;
 }
@@ -350,8 +331,15 @@ int file_prepare(void)
     if (test_mode == MODE_WRITE)  
       unlink(file_name);
 
-    log_text(LOG_DEBUG, "Opening file: %s", file_name);
-    files[i] = sb_open(file_name);
+    log_text(LOG_DEBUG, "Opening file: %s",file_name);
+#ifndef _WIN32
+    files[i] = open(file_name, O_CREAT | O_RDWR | file_extra_flags,
+                    S_IRUSR | S_IWUSR);
+#else
+    files[i] = CreateFile(file_name, GENERIC_READ|GENERIC_WRITE, 0, NULL,
+      OPEN_ALWAYS, file_extra_flags? file_extra_flags : FILE_ATTRIBUTE_NORMAL,
+      NULL);
+#endif
     if (!VALID_FILE(files[i]))
     {
       log_errno(LOG_FATAL, "Cannot open file");
@@ -364,6 +352,8 @@ int file_prepare(void)
     return 1;
 #endif
 
+  pthread_mutex_init(&fsync_mutex, NULL);
+  
   return 0; 
 }
 
@@ -392,13 +382,15 @@ int file_done(void)
   if (buffer != NULL)
     sb_free_memaligned(buffer);
 
-  sb_percentile_done(&local_percentile);
-
+  pthread_mutex_destroy(&fsync_mutex);
+  
   return 0;
 }
 
-sb_request_t file_get_request(void)
+sb_request_t file_get_request(int tid)
 {
+  (void)tid; /* unused */
+  
   if (test_mode == MODE_WRITE || test_mode == MODE_REWRITE ||
       test_mode == MODE_READ)
     return file_get_seq_request();
@@ -417,71 +409,18 @@ sb_request_t file_get_seq_request(void)
   sb_file_request_t    *file_req = &sb_req.u.file_request;
 
   sb_req.type = SB_REQ_TYPE_FILE;
-  SB_THREAD_MUTEX_LOCK();
   
   /* assume function is called with correct mode always */
   if (test_mode == MODE_WRITE || test_mode == MODE_REWRITE)
     file_req->operation = FILE_OP_TYPE_WRITE;
   else     
     file_req->operation = FILE_OP_TYPE_READ;
-
-  /* Do final fsync on all files and quit if we are done */
-  if (sb_globals.max_requests > 0 && req_performed >= sb_globals.max_requests)
-  {
-    /* no fsync for reads */
-    if (file_fsync_end && file_req->operation == FILE_OP_TYPE_WRITE &&
-        fsynced_file2 < num_files)
-    {
-      file_req->file_id = fsynced_file2;
-      file_req->pos = 0;
-      file_req->size = 0;
-      file_req->operation = FILE_OP_TYPE_FSYNC;
-      fsynced_file2++;
-    }
-    else 
-      sb_req.type = SB_REQ_TYPE_NULL;
-
-    SB_THREAD_MUTEX_UNLOCK();
-    return sb_req;
-  }
-
-  /* See whether it's time to fsync file(s) */
-  if (file_fsync_freq != 0 && file_req->operation == FILE_OP_TYPE_WRITE &&
-      is_dirty && req_performed % file_fsync_freq == 0)
-  {
-    file_req->operation = FILE_OP_TYPE_FSYNC;
-    file_req->file_id = fsynced_file;
-    file_req->pos = 0;
-    file_req->size = 0;
-    fsynced_file++;
-    if (fsynced_file == num_files)
-    {
-      fsynced_file = 0;
-      is_dirty = 0;
-    }
-
-    SB_THREAD_MUTEX_UNLOCK();
-    return sb_req;
-  }
-
-  req_performed++;
-
-  if (file_req->operation == FILE_OP_TYPE_WRITE)
-    is_dirty = 1;
-
-  /* Rewind to the first file if all files are processed */
-  if (current_file == num_files)
-  {
-    position= 0;
-    current_file= 0;
-  }
-  
   if (file_merged_requests > 0)
   {
     if (position + file_max_request_size <= file_size)
       file_req->size = file_max_request_size;
     else
-      file_req->size = file_size - position;
+      file_req->size = file_size - position;    
     file_req->file_id = current_file;
     file_req->pos = position;
   }
@@ -491,26 +430,45 @@ sb_request_t file_get_seq_request(void)
     file_req->file_id = current_file;
     file_req->pos = position;
   }
-
-  position += file_req->size;
-
+  
+  /* Advance pointers, if we're not in the fsync phase */ 
+  pthread_mutex_lock(&fsync_mutex);
+  if(current_file != num_files)
+    position += file_req->size;
   /* scroll to the next file if not already out of bound */
-  if (position == file_size)
+  if (position == file_size && current_file != num_files)
   {
     current_file++;
     position=0;
 
+    pthread_mutex_unlock(&fsync_mutex);
+    
     if (sb_globals.validate)
     {
       check_seq_req(&prev_req, file_req);
       prev_req = *file_req;
     }
     
-    SB_THREAD_MUTEX_UNLOCK(); 
     return sb_req; /* This request is valid even for last file */
   }      
   
-  SB_THREAD_MUTEX_UNLOCK(); 
+  /* if we've done with all files stop */
+  if (current_file == num_files)
+  {
+    /* no fsync for reads */
+    if (file_fsync_end && file_req->operation == FILE_OP_TYPE_WRITE &&
+        fsynced_file < num_files)
+    {
+      file_req->file_id = fsynced_file;
+      file_req->pos = 0;
+      file_req->size = 0;
+      file_req->operation = FILE_OP_TYPE_FSYNC;
+      fsynced_file++;
+    }
+    else 
+      sb_req.type = SB_REQ_TYPE_NULL;
+  }  
+  pthread_mutex_unlock(&fsync_mutex);
 
   if (sb_globals.validate)
   {
@@ -535,7 +493,6 @@ sb_request_t file_get_rnd_request(void)
   int                  mode = test_mode;
   
   sb_req.type = SB_REQ_TYPE_FILE;
-  SB_THREAD_MUTEX_LOCK(); 
   
   /*
     Convert mode for combined tests. Locking to get consistent values
@@ -543,19 +500,22 @@ sb_request_t file_get_rnd_request(void)
   */
   if (test_mode==MODE_RND_RW)
   {
-    if ((double)(read_ops + 1) / (write_ops + 1) < file_rw_ratio)
+    SB_THREAD_MUTEX_LOCK();
+    if ((double)(real_read_ops + 1) / (real_write_ops + 1) < file_rw_ratio)
       mode=MODE_RND_READ;
     else
       mode=MODE_RND_WRITE;
+    SB_THREAD_MUTEX_UNLOCK();
   }
 
   /* fsync all files (if requested by user) as soon as we are done */
-  if (sb_globals.max_requests > 0 && req_performed >= sb_globals.max_requests)
+  if (req_performed == sb_globals.max_requests && sb_globals.max_requests > 0)
   {
     if (file_fsync_end != 0 &&
         (real_mode == MODE_RND_WRITE || real_mode == MODE_RND_RW ||
          real_mode == MODE_MIXED))
     {
+      pthread_mutex_lock(&fsync_mutex);
       if(fsynced_file2 < num_files)
       {
         file_req->file_id = fsynced_file2;
@@ -563,14 +523,14 @@ sb_request_t file_get_rnd_request(void)
         file_req->pos = 0;
         file_req->size = 0;
         fsynced_file2++;
-
-        SB_THREAD_MUTEX_UNLOCK();        
+        pthread_mutex_unlock(&fsync_mutex);
+        
         return sb_req;
       }
+      pthread_mutex_unlock(&fsync_mutex);
     }
     sb_req.type = SB_REQ_TYPE_NULL;
 
-    SB_THREAD_MUTEX_UNLOCK();        
     return sb_req;
   }
 
@@ -578,7 +538,7 @@ sb_request_t file_get_rnd_request(void)
     is_dirty is only set if writes are done and cleared after all files
     are synced
   */
-  if (file_fsync_freq != 0 && is_dirty)
+  if(file_fsync_freq != 0 && is_dirty)
   {
     if (req_performed % file_fsync_freq == 0)
     {
@@ -592,8 +552,7 @@ sb_request_t file_get_rnd_request(void)
         fsynced_file = 0;
         is_dirty = 0;
       }
-
-      SB_THREAD_MUTEX_UNLOCK();
+      
       return sb_req;
     }
   }
@@ -614,7 +573,6 @@ sb_request_t file_get_rnd_request(void)
   if (file_req->operation == FILE_OP_TYPE_WRITE) 
     is_dirty = 1;
 
-  SB_THREAD_MUTEX_UNLOCK();        
   return sb_req;
 }
 
@@ -625,7 +583,7 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
   sb_file_request_t *file_req = &sb_req->u.file_request;
   log_msg_t          msg;
   log_msg_oper_t     op_msg;
-
+  
   if (sb_globals.debug)
   {
     log_text(LOG_DEBUG,
@@ -640,7 +598,7 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
   /* Check request parameters */
   if (file_req->file_id > num_files)
   {
-    log_text(LOG_FATAL, "Incorrect file id in request: %u", file_req->file_id);
+    log_text(LOG_FATAL, "Incorrect file discovered in request");
     return 1;
   }
   if (file_req->pos + file_req->size > file_size)
@@ -648,7 +606,9 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
     log_text(LOG_FATAL, "Too large position discovered in request!");
     return 1;
   }
+  
   fd = files[file_req->file_id];
+
   /* Prepare log message */
   msg.type = LOG_MSG_TYPE_OPER;
   msg.data = &op_msg;
@@ -672,7 +632,6 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
                   fd, (long long)file_req->pos);
         return 1;
       }
-
       /* Check if we have to fsync each write operation */
       if (file_fsync_all)
       {
@@ -681,25 +640,16 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
           log_errno(LOG_FATAL, "Failed to fsync file! file: " FD_FMT, fd);
           return 1;
         }
-
-        SB_THREAD_MUTEX_LOCK();
-        other_ops++;
-        SB_THREAD_MUTEX_UNLOCK();
       }
-
       LOG_EVENT_STOP(msg, thread_id);
 
-      sb_percentile_update(&local_percentile,
-                           sb_timer_value(&timers[thread_id]));
-
-      /* In async mode stats will me updated on AIO requests completion */
-      if (file_io_mode != FILE_IO_MODE_ASYNC)
-      {
-        SB_THREAD_MUTEX_LOCK();
-        write_ops++;
-        bytes_written += file_req->size;
-        SB_THREAD_MUTEX_UNLOCK();
-      }
+      SB_THREAD_MUTEX_LOCK();
+      write_ops++;
+      real_write_ops++;
+      bytes_written += file_req->size;
+      if (file_fsync_all)
+        other_ops++;
+      SB_THREAD_MUTEX_UNLOCK();
 
       break;
     case FILE_OP_TYPE_READ:
@@ -714,9 +664,6 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
       }
       LOG_EVENT_STOP(msg, thread_id);
 
-      sb_percentile_update(&local_percentile,
-                           sb_timer_value(&timers[thread_id]));
-
       /* Validate block if run with validation enabled */
       if (sb_globals.validate &&
           file_validate_buffer(buffer, file_req->size, file_req->pos))
@@ -726,15 +673,13 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
            file_req->file_id, file_req->pos);
         return 1;
       }
+      
+      SB_THREAD_MUTEX_LOCK();
+      read_ops++;
+      real_read_ops++;
+      bytes_read += file_req->size;
 
-      /* In async mode stats will me updated on AIO requests completion */
-      if(file_io_mode != FILE_IO_MODE_ASYNC)
-      {
-        SB_THREAD_MUTEX_LOCK();
-        read_ops++;
-        bytes_read += file_req->size;
-        SB_THREAD_MUTEX_UNLOCK();
-      }
+      SB_THREAD_MUTEX_UNLOCK();
 
       break;
     case FILE_OP_TYPE_FSYNC:
@@ -743,19 +688,14 @@ int file_execute_request(sb_request_t *sb_req, int thread_id)
         break;
       if(file_fsync(file_req->file_id, thread_id))
       {
-        log_errno(LOG_FATAL, "Failed to fsync file! id: %u fd: " FD_FMT,
-                  file_req->file_id, fd);
+        log_errno(LOG_FATAL, "Failed to fsync file! file: " FD_FMT, fd);
         return 1;
       }
-
-      /* In async mode stats will me updated on AIO requests completion */
-      if(file_io_mode != FILE_IO_MODE_ASYNC)
-      {
-        SB_THREAD_MUTEX_LOCK();
-        other_ops++;
-        SB_THREAD_MUTEX_UNLOCK();
-      }
-
+    
+      SB_THREAD_MUTEX_LOCK();
+      other_ops++;
+      SB_THREAD_MUTEX_UNLOCK();
+    
       break;         
     default:
       log_text(LOG_FATAL, "Execute of UNKNOWN file request type called (%d)!, "
@@ -771,16 +711,16 @@ void file_print_mode(void)
 {
   char sizestr[16];
   
-  log_text(LOG_NOTICE, "Extra file open flags: %x", file_extra_flags);
-  log_text(LOG_NOTICE, "%d files, %sb each", num_files,
+  log_text(LOG_INFO, "Extra file open flags: %d", file_extra_flags);
+  log_text(LOG_INFO, "%d files, %sb each", num_files,
            sb_print_value_size(sizestr, sizeof(sizestr), file_size));
-  log_text(LOG_NOTICE, "%sb total file size",
+  log_text(LOG_INFO, "%sb total file size",
            sb_print_value_size(sizestr, sizeof(sizestr),
                                file_size * num_files));
-  log_text(LOG_NOTICE, "Block size %sb",
+  log_text(LOG_INFO, "Block size %sb",
            sb_print_value_size(sizestr, sizeof(sizestr), file_block_size));
   if (file_merged_requests > 0)
-    log_text(LOG_NOTICE, "Merging requests  up to %sb for sequential IO.",
+    log_text(LOG_INFO, "Merging requests  up to %sb for sequential IO.",
              sb_print_value_size(sizestr, sizeof(sizestr),
                                  file_max_request_size));
 
@@ -789,9 +729,9 @@ void file_print_mode(void)
     case MODE_RND_WRITE:
     case MODE_RND_READ:
     case MODE_RND_RW:
-      log_text(LOG_NOTICE, "Number of IO requests: %d",
+      log_text(LOG_INFO, "Number of random requests for random IO: %d",
                sb_globals.max_requests);
-      log_text(LOG_NOTICE,
+      log_text(LOG_INFO,
                "Read/Write ratio for combined random IO test: %2.2f",
                file_rw_ratio);
       break;
@@ -800,87 +740,47 @@ void file_print_mode(void)
   }
 
   if (file_fsync_freq > 0)
-    log_text(LOG_NOTICE,
+    log_text(LOG_INFO,
              "Periodic FSYNC enabled, calling fsync() each %d requests.",
              file_fsync_freq);
 
   if (file_fsync_end)
-    log_text(LOG_NOTICE, "Calling fsync() at the end of test, Enabled.");
+    log_text(LOG_INFO, "Calling fsync() at the end of test, Enabled.");
 
   if (file_fsync_all)
-    log_text(LOG_NOTICE, "Calling fsync() after each write operation.");
+    log_text(LOG_INFO, "Calling fsync() after each write operation.");
 
-  log_text(LOG_NOTICE, "Using %s I/O mode", get_io_mode_str(file_io_mode));
+  log_text(LOG_INFO, "Using %s I/O mode", get_io_mode_str(file_io_mode));
 
   if (sb_globals.validate)
-    log_text(LOG_NOTICE, "Using checksums validation.");
+    log_text(LOG_INFO, "Using checksums validation.");
   
-  log_text(LOG_NOTICE, "Doing %s test", get_test_mode_str(test_mode));
+  log_text(LOG_INFO, "Doing %s test", get_test_mode_str(test_mode));
 }
 
 
 /* Print test statistics */
 
 
-void file_print_stats(sb_stat_t type)
+void file_print_stats(void)
 {
-  double seconds;
+  double total_time;
   char   s1[16], s2[16], s3[16], s4[16];
-  unsigned long long diff_read;
-  unsigned long long diff_written;
-  unsigned long long diff_other_ops;
 
-  switch (type) {
-  case SB_STAT_INTERMEDIATE:
-    {
-      SB_THREAD_MUTEX_LOCK();
-
-      seconds = NS2SEC(sb_timer_split(&sb_globals.exec_timer));
-
-      diff_read = bytes_read - last_bytes_read;
-      diff_written = bytes_written - last_bytes_written;
-      diff_other_ops = other_ops - last_other_ops;
-
-      last_bytes_read = bytes_read;
-      last_bytes_written = bytes_written;
-      last_other_ops = other_ops;
-
-      SB_THREAD_MUTEX_UNLOCK();
-
-      log_timestamp(LOG_NOTICE, &sb_globals.exec_timer,
-                    "reads: %4.2f MB/s writes: %4.2f MB/s fsyncs: %4.2f/s "
-                    "response time: %4.3fms (%u%%)",
-                    diff_read / megabyte / seconds,
-                    diff_written / megabyte / seconds,
-                    diff_other_ops / seconds,
-                    NS2MS(sb_percentile_calculate(&local_percentile,
-                                                  sb_globals.percentile_rank)),
-                    sb_globals.percentile_rank);
-
-      sb_percentile_reset(&local_percentile);
-
-      break;
-    }
-
-  case SB_STAT_CUMULATIVE:
-    seconds = NS2SEC(sb_timer_split(&sb_globals.cumulative_timer1));
-
-    log_text(LOG_NOTICE,
-             "Operations performed:  %d reads, %d writes, %d Other = %d Total",
-             read_ops, write_ops, other_ops, read_ops + write_ops + other_ops);
-    log_text(LOG_NOTICE, "Read %sb  Written %sb  Total transferred %sb  "
-             "(%sb/sec)",
-             sb_print_value_size(s1, sizeof(s1), bytes_read),
-             sb_print_value_size(s2, sizeof(s2), bytes_written),
-             sb_print_value_size(s3, sizeof(s3), bytes_read + bytes_written),
-             sb_print_value_size(s4, sizeof(s4),
-                                 (bytes_read + bytes_written) / seconds));
-    log_text(LOG_NOTICE, "%8.2f Requests/sec executed",
-             (read_ops + write_ops) / seconds);
-    clear_stats();
-
-    break;
-  }
+  total_time = NS2SEC(sb_timer_value(&sb_globals.exec_timer));
+  
+  log_text(LOG_NOTICE,
+           "Operations performed:  %d Read, %d Write, %d Other = %d Total",
+           read_ops, write_ops, other_ops, read_ops + write_ops + other_ops); 
+  log_text(LOG_NOTICE, "Read %sb  Written %sb  Total transferred %sb  "
+           "(%sb/sec)",
+           sb_print_value_size(s1, sizeof(s1), bytes_read),
+           sb_print_value_size(s2, sizeof(s2), bytes_written),
+           sb_print_value_size(s3, sizeof(s3), bytes_read + bytes_written),
+           sb_print_value_size(s4, sizeof(s4),
+                               (bytes_read + bytes_written) / total_time));  
+  log_text(LOG_NOTICE, "%8.2f Requests/sec executed",
+           (read_ops + write_ops) / total_time);  
 }
 
 
@@ -936,56 +836,6 @@ const char *get_test_mode_str(file_test_mode_t mode)
 }
 
 
-/*
-  Converts the argument of --file-extra-flags to platform-specific open() flags.
-  Returns 1 on error, 0 on success.
-*/
-
-static int convert_extra_flags(file_flags_t extra_flags, int *open_flags)
-{
-  switch (file_extra_flags) {
-  case SB_FILE_FLAG_NORMAL:
-#ifdef _WIN32
-    *open_flags = FILE_ATTRIBUTE_NORMAL;
-#endif
-    break;
-  case SB_FILE_FLAG_SYNC:
-#ifdef _WIN32
-    *open_flags = FILE_FLAG_WRITE_THROUGH;
-#else
-    *open_flags = O_SYNC;
-#endif
-    break;
-  case SB_FILE_FLAG_DSYNC:
-#ifdef O_DSYNC
-    *open_flags = O_DSYNC;
-#else
-    log_text(LOG_FATAL,
-             "--file-extra-flags=dsync is not supported on this platform.");
-    return 1;
-#endif
-    break;
-  case SB_FILE_FLAG_DIRECTIO:
-#ifdef HAVE_DIRECTIO
-    /* Will call directio(3) later */
-#elif defined(O_DIRECT)
-    *open_flags = O_DIRECT;
-#elif defined _WIN32
-    *open_flags = FILE_FLAG_NO_BUFFERING;
-#else
-    log_text(LOG_FATAL,
-             "--file-extra-flags=direct is not supported on this platform.");
-    return 1;
-#endif
-    break;
-  default:
-    log_text(LOG_FATAL, "Unknown extra flags value: %d", (int) extra_flags);
-    return 1;
-  }
-
-  return 0;
-}
-
 /* Create files of necessary size for test */
 
 
@@ -995,53 +845,26 @@ int create_files(void)
   int                fd;
   char               file_name[512];
   long long          offset;
-  long long          written = 0;
-  sb_timer_t         t;
-  double             seconds;
-  int                flags = 0;
 
-  log_text(LOG_NOTICE, "%d files, %ldKb each, %ldMb total", num_files,
+  log_text(LOG_INFO, "%d files, %ldKb each, %ldMb total", num_files,
            (long)(file_size / 1024),
            (long)((file_size * num_files) / (1024 * 1024)));
-  log_text(LOG_NOTICE, "Creating files for the test...");
-  log_text(LOG_NOTICE, "Extra file open flags: %x", file_extra_flags);
-
-  if (convert_extra_flags(file_extra_flags, &flags))
-    return 1;
-
-  sb_timer_init(&t);
-  sb_timer_start(&t);
-
-  for (i=0; i < num_files; i++)
-  {
+  log_text(LOG_INFO, "Creating files for the test...");
+  for (i=0; i < num_files; i++) {
     snprintf(file_name, sizeof(file_name), "test_file.%d",i);
+    unlink(file_name);
 
-    fd = open(file_name, O_CREAT | O_WRONLY | flags, S_IRUSR | S_IWUSR);
+    fd = open(file_name, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
     if (fd < 0)
     {
       log_errno(LOG_FATAL, "Can't open file");
       return 1; 
     }
 
-#ifndef _WIN32
-    offset = (long long) lseek(fd, 0, SEEK_END);
-#else
-    offset = (long long) _lseeki64(fd, 0, SEEK_END);
-#endif
-
-    if (offset >= file_size)
-      log_text(LOG_NOTICE, "Reusing existing file %s", file_name);
-    else if (offset > 0)
-      log_text(LOG_NOTICE, "Extending existing file %s", file_name);
-    else
-      log_text(LOG_NOTICE, "Creating file %s", file_name);
-
-    for (; offset < file_size;
-         written += file_block_size, offset += file_block_size)
+    for (offset = 0; offset < file_size; offset += file_block_size)
     {
-      /*
-        If in validation mode, fill buffer with random values
-        and write checksum
+      /* If in validation mode, fill buffer with random values
+         and write checksum
       */
       if (sb_globals.validate)
         file_fill_buffer(buffer, file_block_size, offset);
@@ -1058,18 +881,7 @@ int create_files(void)
 #endif
     close(fd);
   }
-
-  sb_timer_stop(&t);
-  seconds = NS2SEC(sb_timer_value(&t));
-
-  if (written > 0)
-    log_text(LOG_NOTICE, "%llu bytes written in %.2f seconds (%.2f MB/sec).",
-             written, seconds,
-             (double) (written / megabyte) / seconds);
-  else
-    log_text(LOG_NOTICE, "No bytes written.");
-
-  return 0;
+  return 0; 
 
  error:
   log_errno(LOG_FATAL, "Failed to write file!");
@@ -1086,7 +898,7 @@ int remove_files(void)
   unsigned int i;
   char         file_name[512];
   
-  log_text(LOG_NOTICE, "Removing test files...");
+  log_text(LOG_INFO, "Removing test files...");
   
   for (i = 0; i < num_files; i++)
   {
@@ -1128,12 +940,19 @@ int file_cmd_cleanup(void)
   return remove_files();
 }
 
-void init_vars(void)
+void clear_stats(void)
 {
   position = 0; /* position in file */
   current_file = 0;
   fsynced_file = 0; /* for counting file to be fsynced */
   fsynced_file2 = 0;
+  read_ops = 0;
+  real_read_ops = 0;
+  write_ops = 0;
+  real_write_ops = 0;
+  other_ops = 0;
+  bytes_read = 0;
+  bytes_written = 0;
   req_performed = 0;
   is_dirty = 0;
   if (sb_globals.validate)
@@ -1143,24 +962,6 @@ void init_vars(void)
     prev_req.file_id = 0;
     prev_req.pos = 0;
   }
-}
-
-void clear_stats(void)
-{
-  read_ops = 0;
-  write_ops = 0;
-  other_ops = 0;
-  last_other_ops = 0;
-  bytes_read = 0;
-  last_bytes_read = 0;
-  bytes_written = 0;
-  last_bytes_written = 0;
-  /*
-    So that intermediate stats are calculated from the current moment
-    rather than from the previous intermediate report
-  */
-  if (sb_timer_initialized(&sb_globals.exec_timer))
-    sb_timer_split(&sb_globals.exec_timer);
 }
 
 
@@ -1311,48 +1112,28 @@ int file_wait(int thread_id, long nreq)
     iocbp = (struct iocb *)(unsigned long)event->obj;
     oper = (sb_aio_oper_t *)iocbp;
     switch (oper->type) {
-    case FILE_OP_TYPE_FSYNC:
+      case FILE_OP_TYPE_FSYNC:
         if (event->res != 0)
         {
           log_text(LOG_FATAL, "Asynchronous fsync failed!\n");
           return 1;
         }
-
-        SB_THREAD_MUTEX_LOCK();
-        other_ops++;
-        SB_THREAD_MUTEX_UNLOCK();
-
         break;
-
-    case FILE_OP_TYPE_READ:
+      case FILE_OP_TYPE_READ:
         if ((ssize_t)event->res != oper->len)
         {
           log_text(LOG_FATAL, "Asynchronous read failed!\n");
           return 1;
         }
-
-        SB_THREAD_MUTEX_LOCK();
-        read_ops++;
-        bytes_read += oper->len;
-        SB_THREAD_MUTEX_UNLOCK();
-
         break;
-
-    case FILE_OP_TYPE_WRITE:
+      case FILE_OP_TYPE_WRITE:
         if ((ssize_t)event->res != oper->len)
         {
           log_text(LOG_FATAL, "Asynchronous write failed!\n");
           return 1;
         }
-
-        SB_THREAD_MUTEX_LOCK();
-        write_ops++;
-        bytes_written += oper->len;
-        SB_THREAD_MUTEX_UNLOCK();
-
         break;
-
-    default:
+      default:
         break;
     }
     free(oper);
@@ -1405,7 +1186,7 @@ int file_mmap_prepare(void)
       }
 #endif 
     }
-
+    
 #if SIZEOF_SIZE_T > 4
   mmaps = (void **)malloc(num_files * sizeof(void *));
   for (i = 0; i < num_files; i++)
@@ -1502,13 +1283,13 @@ int file_fsync(unsigned int file_id, int thread_id)
   else if (file_io_mode == FILE_IO_MODE_MMAP)
   {
 #ifndef _WIN32
-    return msync(mmaps[file_id], file_size, MS_SYNC | MS_INVALIDATE);
+    msync(mmaps[file_id], file_size, MS_SYNC | MS_INVALIDATE);
 #else
-    return !FlushViewOfFile(mmaps[file_id], (size_t)file_size);
+    FlushViewOfFile(mmaps[file_id], (size_t)file_size);
 #endif
   }
 #endif
-
+  
   return 1; /* Unknown I/O mode */
 }
 
@@ -1657,6 +1438,7 @@ ssize_t file_pread(unsigned int file_id, void *buf, ssize_t count,
       return 0;
     memcpy(buffer, (char *)start + page_offset, count);
     munmap(start, count + page_offset);
+
     return count;
 # else
     (void)start; /* unused */
@@ -1713,7 +1495,6 @@ ssize_t file_pwrite(unsigned int file_id, void *buf, ssize_t count,
     page_offset = offset - page_addr;
     start = mmap(NULL, count + page_offset, PROT_READ | PROT_WRITE, MAP_SHARED,
                  fd, page_addr);
-
     if (start == MAP_FAILED)
       return 0;
     memcpy((char *)start + page_offset, buffer, count);
@@ -1844,13 +1625,35 @@ int parse_arguments(void)
 
   mode = sb_get_value_string("file-extra-flags");
   if (mode == NULL || !strlen(mode))
-    file_extra_flags = SB_FILE_FLAG_NORMAL;
+    file_extra_flags = 0;
   else if (!strcmp(mode, "sync"))
-    file_extra_flags = SB_FILE_FLAG_SYNC;
+  {
+#ifdef _WIN32
+    file_extra_flags = FILE_FLAG_WRITE_THROUGH;
+#else
+    file_extra_flags = O_SYNC;
+#endif
+  }
   else if (!strcmp(mode, "dsync"))
-    file_extra_flags = SB_FILE_FLAG_DSYNC;
+  {
+#ifdef O_DSYNC
+    file_extra_flags = O_DSYNC;
+#else
+    log_text(LOG_FATAL, "O_DSYNC is not supported on this platform.");
+    return 1;
+#endif
+  }
   else if (!strcmp(mode, "direct"))
-    file_extra_flags = SB_FILE_FLAG_DIRECTIO;
+  {
+#ifdef _WIN32
+    file_extra_flags = FILE_FLAG_NO_BUFFERING;
+#elif defined(O_DIRECT)
+    file_extra_flags = O_DIRECT;
+#else
+    log_text(LOG_FATAL, "O_DIRECT is not supported on this platform.");
+    return 1;
+#endif
+  }
   else
   {
     log_text(LOG_FATAL, "Invalid value for file-extra-flags: %s", mode);
@@ -1975,10 +1778,9 @@ unsigned long sb_get_allocation_granularity(void)
 #endif
 }
 
-/*
-  Allocate a buffer of a specified size and align it to the allocation
-  granularity
-*/
+/* Allocate a buffer of a specified size and align it to the page size */
+
+
 void *sb_memalign(size_t size)
 {
   unsigned long page_size;
@@ -1986,9 +1788,7 @@ void *sb_memalign(size_t size)
   
 #ifdef HAVE_POSIX_MEMALIGN
   page_size = sb_getpagesize();
-  int ret= posix_memalign(&buffer, page_size, size);
-  if (ret != 0)
-    buffer = NULL; 
+  posix_memalign((void **)&buffer, page_size, size);
 #elif defined(HAVE_MEMALIGN)
   page_size = sb_getpagesize();
   buffer = memalign(page_size, size);
@@ -2000,8 +1800,7 @@ void *sb_memalign(size_t size)
   buffer = VirtualAlloc(NULL, size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
 #else
   (void)page_size; /* unused */
-  log_text(LOG_WARNING, "None of valloc(), memalign() and posix_memalign() "
-           "is available, doing unaligned IO!");
+  log_text(LOG_WARNING, "None of valloc(), memalign and posix_memalign() is available, doing unaligned IO!");
   buffer = malloc(size);
 #endif
 
@@ -2017,39 +1816,10 @@ static void sb_free_memaligned(void *buf)
 #endif
 }
 
-static FILE_DESCRIPTOR sb_open(const char *name)
-{
-  FILE_DESCRIPTOR file;
-  int flags = 0;
-
-  if (convert_extra_flags(file_extra_flags, &flags))
-    return SB_INVALID_FILE;
-
-#ifndef _WIN32
-  file = open(name, O_CREAT | O_RDWR | flags,
-              S_IRUSR | S_IWUSR);
-#else
-  file = CreateFile(name, GENERIC_READ|GENERIC_WRITE, 0, NULL,
-                    OPEN_ALWAYS, flags, NULL);
-#endif
-
-#ifdef HAVE_DIRECTIO
-  if (VALID_FILE(file) && directio(file, DIRECTIO_ON))
-  {
-    log_errno(LOG_FATAL, "directio() failed");
-    return SB_INVALID_FILE;
-  }
-#endif
-
-  return file;
-}
-
-
 /* Fill buffer with random values and write checksum */
 
 
-void file_fill_buffer(unsigned char *buf, unsigned int len,
-                      size_t offset)
+void file_fill_buffer(char *buf, unsigned int len, size_t offset)
 {
   unsigned int i;
 
@@ -2057,7 +1827,7 @@ void file_fill_buffer(unsigned char *buf, unsigned int len,
     buf[i] = sb_rnd() & 0xFF;
 
   /* Store the checksum */
-  *(int *)(buf + i) = (int)crc32(0, (unsigned char *)buf, len -
+  *(int *)(buf + i) = (int)crc32(0, buf, len -
                                  (FILE_CHECKSUM_LENGTH + FILE_OFFSET_LENGTH));
   /* Store the offset */
   *(long *)(buf + i + FILE_CHECKSUM_LENGTH) = offset;
@@ -2067,14 +1837,14 @@ void file_fill_buffer(unsigned char *buf, unsigned int len,
 /* Validate checksum and offset of block read from disk */
 
 
-int file_validate_buffer(unsigned char  *buf, unsigned int len, size_t offset)
+int file_validate_buffer(char  *buf, unsigned int len, size_t offset)
 {
   unsigned int checksum;
   unsigned int cs_offset;
 
   cs_offset = len - (FILE_CHECKSUM_LENGTH + FILE_OFFSET_LENGTH);
   
-  checksum = (unsigned int)crc32(0, (unsigned char *)buf, cs_offset);
+  checksum = (unsigned int)crc32(0, buf, cs_offset);
 
   if (checksum != *(unsigned int *)(buf + cs_offset))
   {

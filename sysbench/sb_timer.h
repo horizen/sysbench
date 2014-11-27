@@ -41,23 +41,18 @@
 #define NS2SEC(nsec) ((nsec)/1000000000.)
 #define SEC2NS(sec)  ((sec)*1000000000ULL)
 
-/* Convert nanoseconds to milliseconds and vice versa */
 #define NS2MS(nsec) ((nsec)/1000000.)
-#define MS2NS(sec)  ((sec)*1000000ULL)
-
-/* Difference between two 'timespec' values in nanoseconds */
-#define TIMESPEC_DIFF(a,b) (SEC2NS(a.tv_sec - b.tv_sec) + \
-			    (a.tv_nsec - b.tv_nsec))
+#define MS2NS(msec)  ((msec)*1000000ULL)
 
 /* Wrapper over various *gettime* functions */
 #ifdef HAVE_CLOCK_GETTIME
 # define SB_GETTIME(tsp) clock_gettime(CLOCK_REALTIME, tsp)
 #else
-# define SB_GETTIME(tsp)                        \
-  do {                                          \
-    struct timeval tv;                          \
-    gettimeofday(&tv, NULL);                    \
-    (tsp)->tv_sec = tv.tv_sec;                  \
+# define SB_GETTIME(tsp)              \
+  do {                                \
+    struct timeval tv;                \
+    gettimeofday(&tv, NULL);          \
+    (tsp)->tv_sec = tv.tv_sec;        \
     (tsp)->tv_nsec = tv.tv_usec * 1000;         \
   } while (0)
 #endif
@@ -71,13 +66,11 @@ typedef struct
 {
   struct timespec    time_start;
   struct timespec    time_end;
-  struct timespec    time_split;
-  unsigned long long elapsed;
+  unsigned long long my_time;
   unsigned long long min_time;
   unsigned long long max_time;
   unsigned long long sum_time;
   unsigned long long events;
-  unsigned long long queue_time;
   timer_state_t      state;
 } sb_timer_t;
 
@@ -87,30 +80,17 @@ typedef struct
 /* Initialize timer */
 void sb_timer_init(sb_timer_t *);
 
-/* Reset timer counters, but leave the current state intact */
-void sb_timer_reset(sb_timer_t *t);
-
-/* check whether the timer is initialized */
-int sb_timer_initialized(sb_timer_t *t);
-
-/* check whether the timer is running */
-int sb_timer_running(sb_timer_t *t);
-
 /* start timer */
 void sb_timer_start(sb_timer_t *);
 
 /* stop timer */
 void sb_timer_stop(sb_timer_t *);
 
-/* get the current timer value in nanoseconds */
+/* get timer's value in microseconds */
 unsigned long long sb_timer_value(sb_timer_t *);
 
-/*
-  get time elapsed since the previos call to sb_timer_split() for the specified
-  timer without stopping it.  The first call returns time elapsed since the
-  timer was started.
-*/
-unsigned long long sb_timer_split(sb_timer_t *);
+/* get current time without stopping timer */
+unsigned long long  sb_timer_current(sb_timer_t *);
 
 /* get average time per event */
 unsigned long long get_avg_time(sb_timer_t *);
@@ -126,8 +106,5 @@ unsigned long long  get_max_time(sb_timer_t *);
 
 /* sum data from two timers. used in summing data from multiple threads */
 sb_timer_t merge_timers(sb_timer_t *, sb_timer_t *);
-
-/* add a number of nanoseconds to a struct timespec */
-void add_ns_to_timespec(struct timespec *dest, long long delta);
 
 #endif /* SB_TIMER_H */

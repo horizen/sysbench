@@ -14,7 +14,9 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-SUBDIRS = drivers tests scripting .
+SUBDIRS = drivers tests .
+
+EXTRA_DIST = CMakeLists.txt sb_win.h sb_win.c
 
 bin_PROGRAMS = sysbench
 
@@ -25,14 +27,6 @@ if USE_MYSQL
 mysql_ldadd = drivers/mysql/libsbmysql.a $(MYSQL_LIBS)
 endif
 
-if USE_DRIZZLE
-drizzle_ldadd = drivers/drizzle/libsbdrizzle.a $(LIBDRIZZLE)
-endif
-
-if USE_ATTACHSQL
-attachsql_ldadd = drivers/attachsql/libsbattachsql.a $(LIBATTACHSQL)
-endif
-
 if USE_ORACLE
 ora_ldadd = drivers/oracle/libsboracle.a $(ORA_LIBS)
 endif
@@ -41,19 +35,11 @@ if USE_PGSQL
 pgsql_ldadd = drivers/pgsql/libsbpgsql.a $(PGSQL_LIBS)
 endif
 
-if USE_LUA
-#lua_ldadd = scripting/lua/src/liblua.a -lm @LIBADD_DLOPEN@
-lua_ldadd = scripting/lua/src/liblua.a -lm -ldl
-endif
-
 sysbench_SOURCES = sysbench.c sysbench.h sb_timer.c sb_timer.h \
 sb_options.c sb_options.h sb_logger.c sb_logger.h sb_list.h db_driver.h \
-db_driver.c sb_percentile.c sb_percentile.h
+db_driver.c
 
 sysbench_LDADD = tests/fileio/libsbfileio.a tests/threads/libsbthreads.a \
-    tests/memory/libsbmemory.a tests/cpu/libsbcpu.a \
-    tests/mutex/libsbmutex.a scripting/libsbscript.a \
-    $(mysql_ldadd) $(drizzle_ldadd) $(attachsql_ldadd) $(pgsql_ldadd) $(ora_ldadd) $(lua_ldadd)
-
-sysbench_LDFLAGS = $(EXTRA_LDFLAGS) $(mysql_ldflags) $(attachsql_ldflags) $(pgsql_ldflags) $(ora_ldflags) $(lua_ldflags)
-
+    tests/memory/libsbmemory.a tests/cpu/libsbcpu.a tests/oltp/libsboltp.a \
+    tests/mutex/libsbmutex.a $(mysql_ldadd) $(pgsql_ldadd) $(ora_ldadd)
+sysbench_LDFLAGS = $(EXTRA_LDFLAGS) $(mysql_ldflags) $(pgsql_ldflags) $(ora_ldflags)

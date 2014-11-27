@@ -38,14 +38,15 @@ static sb_arg_t cpu_args[] =
 /* CPU test operations */
 static int cpu_init(void);
 static void cpu_print_mode(void);
-static sb_request_t cpu_get_request(void);
+static sb_request_t cpu_get_request(int);
 static int cpu_execute_request(sb_request_t *, int);
+static void cpu_print_stats(void);
 static int cpu_done(void);
 
 static sb_test_t cpu_test =
 {
-"cpu",
- "CPU performance test",
+  "cpu",
+  "CPU performance test",
   {
     cpu_init,
     NULL,
@@ -53,13 +54,16 @@ static sb_test_t cpu_test =
     cpu_print_mode,
     cpu_get_request,
     cpu_execute_request,
-    NULL,
+    cpu_print_stats,
     NULL,
     NULL,
     cpu_done
   },
   {
-    NULL,NULL,NULL,NULL
+    NULL,
+    NULL,
+    NULL,
+    NULL
   },
   cpu_args,
   {NULL, NULL}
@@ -81,13 +85,12 @@ int register_test_cpu(sb_list_t * tests)
 
 int cpu_init(void)
 {
-  int prime_option= sb_get_value_int("cpu-max-prime");
-  if (prime_option <= 0)
+  max_prime = sb_get_value_int("cpu-max-prime");
+  if (max_prime <= 0)
   {
-    log_text(LOG_FATAL, "Invalid value of cpu-max-prime: %d.", prime_option);
+    log_text(LOG_FATAL, "Invalid value of cpu-max-prime: %d.", max_prime);
     return 1;
   }
-  max_prime= (unsigned int)prime_option;
 
   req_performed = 0;
 
@@ -97,9 +100,11 @@ int cpu_init(void)
 }
 
 
-sb_request_t cpu_get_request(void)
+sb_request_t cpu_get_request(int tid)
 {
   sb_request_t req;
+
+  (void)tid; /* unused */
   
   if (req_performed >= sb_globals.max_requests)
   {
@@ -117,8 +122,7 @@ sb_request_t cpu_get_request(void)
 int cpu_execute_request(sb_request_t *r, int thread_id)
 {
   unsigned long long c;
-  unsigned long long l;
-  double t;
+  unsigned long long l,t;
   unsigned long long n=0;
   log_msg_t           msg;
   log_msg_oper_t      op_msg;
@@ -134,7 +138,7 @@ int cpu_execute_request(sb_request_t *r, int thread_id)
 
   for(c=3; c < max_prime; c++)  
   {
-    t = sqrt((double)c);
+    t = sqrt(c);
     for(l = 2; l <= t; l++)
       if (c % l == 0)
         break;
@@ -150,7 +154,12 @@ int cpu_execute_request(sb_request_t *r, int thread_id)
 void cpu_print_mode(void)
 {
   log_text(LOG_INFO, "Doing CPU performance benchmark\n");  
-  log_text(LOG_NOTICE, "Primer numbers limit: %d\n", max_prime);
+}
+
+void cpu_print_stats(void)
+{
+  log_text(LOG_NOTICE, "Maximum prime number checked in CPU test: %d\n",
+           max_prime);
 }
 
 int cpu_done(void)

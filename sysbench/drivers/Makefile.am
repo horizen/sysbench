@@ -18,14 +18,6 @@ if USE_MYSQL
 MYSQL_DIR = mysql
 endif
 
-if USE_DRIZZLE
-DRIZZLE_DIR = drizzle
-endif
-
-if USE_ATTACHSQL
-ATTACHSQL_DIR = attachsql
-endif
-
 if USE_ORACLE
 ORACLE_DIR = oracle
 endif
@@ -34,4 +26,4 @@ if USE_PGSQL
 PGSQL_DIR = pgsql
 endif
 
-SUBDIRS = $(MYSQL_DIR) $(ORACLE_DIR) $(PGSQL_DIR) $(DRIZZLE_DIR) $(ATTACHSQL_DIR)
+SUBDIRS = $(MYSQL_DIR) $(ORACLE_DIR) $(PGSQL_DIR)

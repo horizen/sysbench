@@ -55,9 +55,9 @@ static sb_arg_t memory_args[] =
 /* Memory test operations */
 static int memory_init(void);
 static void memory_print_mode(void);
-static sb_request_t memory_get_request(void);
+static sb_request_t memory_get_request(int);
 static int memory_execute_request(sb_request_t *, int);
-static void memory_print_stats(sb_stat_t type);
+static void memory_print_stats(void);
 
 static sb_test_t memory_test =
 {
@@ -88,7 +88,7 @@ static sb_test_t memory_test =
 /* Test arguments */
 
 static ssize_t memory_block_size;
-static long long    memory_total_size;
+static size_t   memory_total_size;
 static unsigned int memory_scope;
 static unsigned int memory_oper;
 static unsigned int memory_access_rnd;
@@ -98,8 +98,7 @@ static unsigned int memory_hugetlb;
 
 /* Statistics */
 static unsigned int total_ops;
-static long long    total_bytes;
-static long long    last_bytes;
+static size_t        total_bytes;
 
 /* Array of per-thread buffers */
 static int **buffers;
@@ -216,10 +215,12 @@ int memory_init(void)
 }
 
 
-sb_request_t memory_get_request(void)
+sb_request_t memory_get_request(int tid)
 {
   sb_request_t      req;
   sb_mem_request_t  *mem_req = &req.u.mem_request;
+
+  (void)tid; /* unused */
   
   SB_THREAD_MUTEX_LOCK();
   if (total_bytes >= memory_total_size)
@@ -261,10 +262,11 @@ int memory_execute_request(sb_request_t *sb_req, int thread_id)
     buf = buffers[thread_id];
   end = (int *)((char *)buf + memory_block_size);
 
+  LOG_EVENT_START(msg, thread_id);
+
   if (memory_access_rnd)
   {
     rand = sb_rnd();
-    LOG_EVENT_START(msg, thread_id);
     switch (mem_req->type) {
       case SB_MEM_OP_WRITE:
         for (i = 0; i < memory_block_size; i++)
@@ -290,7 +292,6 @@ int memory_execute_request(sb_request_t *sb_req, int thread_id)
   }
   else
   {
-    LOG_EVENT_START(msg, thread_id);
     switch (mem_req->type) {
       case SB_MEM_OP_NONE:
         for (; buf < end; buf++)
@@ -358,44 +359,18 @@ void memory_print_mode(void)
 }
 
 
-void memory_print_stats(sb_stat_t type)
+void memory_print_stats(void)
 {
-  double       seconds;
-  const double megabyte = 1024.0 * 1024.0;
+  double total_time;
 
-  switch (type) {
-  case SB_STAT_INTERMEDIATE:
-    SB_THREAD_MUTEX_LOCK();
-    seconds = NS2SEC(sb_timer_split(&sb_globals.exec_timer));
-
-    log_timestamp(LOG_NOTICE, &sb_globals.exec_timer,
-                  "%4.2f MB/sec,",
-                  (double)(total_bytes - last_bytes) / megabyte / seconds);
-    last_bytes = total_bytes;
-    SB_THREAD_MUTEX_UNLOCK();
-
-    break;
-
-  case SB_STAT_CUMULATIVE:
-    seconds = NS2SEC(sb_timer_split(&sb_globals.cumulative_timer1));
-
-    log_text(LOG_NOTICE, "Operations performed: %d (%8.2f ops/sec)\n",
-             total_ops, total_ops / seconds);
-    if (memory_oper != SB_MEM_OP_NONE)
-      log_text(LOG_NOTICE, "%4.2f MB transferred (%4.2f MB/sec)\n",
-               total_bytes / megabyte,
-               total_bytes / megabyte / seconds);
-    total_ops = 0;
-    total_bytes = 0;
-    /*
-      So that intermediate stats are calculated from the current moment
-      rather than from the previous intermediate report
-    */
-    if (sb_timer_initialized(&sb_globals.exec_timer))
-      sb_timer_split(&sb_globals.exec_timer);
-
-    break;
-  }
+  total_time = NS2SEC(sb_timer_value(&sb_globals.exec_timer));
+  
+  log_text(LOG_NOTICE, "Operations performed: %d (%8.2f ops/sec)\n", total_ops,
+           total_ops / total_time);
+  if (memory_oper != SB_MEM_OP_NONE)
+    log_text(LOG_NOTICE, "%4.2f MB transferred (%4.2f MB/sec)\n",
+             (double)total_bytes / (1024 * 1024),
+             (double)total_bytes / (1024 * 1024) / total_time);
 }
 
 #ifdef HAVE_LARGE_PAGES

@@ -25,16 +25,12 @@
 #include "sb_options.h"
 #include "sb_timer.h"
 
-/* Text message flags (used in the 'flags' field of log_text_msg_t) */
-
-#define LOG_MSG_TEXT_ALLOW_DUPLICATES 1
-
 /* Macros to log per-request execution statistics */
 
 #define LOG_EVENT_START(msg, thread_id) \
   do \
   { \
-    ((log_msg_oper_t *)(msg).data)->thread_id = thread_id; \
+    sb_timer_start(&sb_globals.op_timers[thread_id]); \
     ((log_msg_oper_t *)(msg).data)->action = LOG_MSG_OPER_START; \
     log_msg(&(msg)); \
   } while (0);
@@ -42,9 +38,9 @@
 #define LOG_EVENT_STOP(msg, thread_id) \
   do \
   { \
-    ((log_msg_oper_t *)(msg).data)->thread_id = thread_id; \
     ((log_msg_oper_t *)(msg).data)->action = LOG_MSG_OPER_STOP; \
     log_msg(&(msg)); \
+    sb_timer_stop(&sb_globals.op_timers[thread_id]); \
   } while (0);
 
 /* Message types definition */
@@ -72,8 +68,7 @@ typedef enum {
 
 typedef struct {
   log_msg_priority_t priority;
-  char               *text;
-  unsigned int       flags;
+  char              *text;
 } log_msg_text_t;
 
 /* Operation start/stop message definition */
@@ -85,7 +80,7 @@ typedef enum {
 
 typedef struct {
   log_msg_oper_action_t action;
-  int                   thread_id;
+  sb_timer_t            timer;
 } log_msg_oper_t;
 
 /* General log message definition */
@@ -115,19 +110,13 @@ typedef struct {
 typedef struct {
   log_handler_ops_t ops;          /* handler operations */
   sb_arg_t             *args;     /* handler arguments */
+  
   sb_list_item_t       listitem;  /* can be linked in a list */
 } log_handler_t;
-
-/* per-thread timers for response time stats */
-extern sb_timer_t *timers;
 
 /* Register logger */
 
 int log_register(void);
-
-/* Display command line options for all register log handlers */
-
-void log_usage(void);
 
 /* Initialize logger */
 
@@ -145,14 +134,6 @@ void log_msg(log_msg_t *);
 
 void log_text(log_msg_priority_t priority, const char *fmt, ...);
 
-/*
-  variant of log_text() which prepends log lines with a elapsed time of the
-  specified timer.
-*/
-
-void log_timestamp(log_msg_priority_t priority, const sb_timer_t *timer,
-                   const char *fmt, ...);
-
 /* printf-like wrapper to log system error messages */
 
 void log_errno(log_msg_priority_t priority, const char *fmt, ...);
@@ -160,12 +141,5 @@ void log_errno(log_msg_priority_t priority, const char *fmt, ...);
 /* Uninitialize logger */
 
 void log_done(void);
-
-/*
-  Print global stats either from the last checkpoint (if used) or
-  from the test start.
-*/
-
-int print_global_stats(void);
 
 #endif /* SB_LOGGER_H */
